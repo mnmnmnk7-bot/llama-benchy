@@ -108,7 +108,7 @@ class _FakeBenchmarkClient:
 
 
 @pytest.mark.asyncio
-async def test_warmup_runs_preserve_progress_streaming_contract(tmp_path):
+async def test_warmup_runs_preserve_progress_streaming_contract(tmp_path, capsys):
     progress_path = tmp_path / "progress.jsonl"
     result_path = tmp_path / "results.json"
     progress = ProgressEmitter(str(progress_path), llama_benchy_version="test-version")
@@ -153,6 +153,12 @@ async def test_warmup_runs_preserve_progress_streaming_contract(tmp_path):
 
     events = _read_jsonl(progress_path)
     event_types = [event["type"] for event in events]
+    stdout = capsys.readouterr().out
+    assert "[--------------------]   0% | 0/2 | Elapsed 00:00 | ETA --:--" in stdout
+    assert " 50% | 1/2 |" in stdout
+    assert "100% | 2/2 |" in stdout
+    assert stdout.index("Warmup 2/2") < stdout.index(" 50% | 1/2 |")
+    assert stdout.index("Run 1/2") < stdout.index(" 50% | 1/2 |")
 
     assert client.latency_calls == [
         {"mode": "generation", "warmup_runs": 2, "measured_runs": 3}
