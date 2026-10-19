@@ -24,6 +24,7 @@ As of January 2nd, 2026, I wasn't able to find any existing benchmarking tool th
 - Reports Time To First Response (data chunk) (TTFR), Estimated Prompt Processing Time (est_ppt), and End-to-End TTFT.
 - Supports configurable prompt length (`--pp`), generation length (`--tg`), and context depth (`--depth`).
 - Can run multiple iterations (`--runs`) and report mean ± std.
+- Shows terminal progress with percentage, elapsed time and a run-based ETA by default (no extra CLI flag).
 - Uses HuggingFace tokenizers for accurate token counts.
 - Correctly handles multi-token prediction (MTP) chunks.
 - Downloads a book from Project Gutenberg to use as source text for prompts to ensure better benchmarking of spec.decoding/MTP models.
@@ -152,6 +153,32 @@ It's recommended to use "generation" latency mode to get prompt processing speed
 By default, the script adapts the prompt size to match the specified value, regardless of the chat template applied. Use `--no-adapt-prompt` to disable this behavior.
 
 Generally you don't need to disable prompt caching on the server, as a probability of cache hits is fairly small. You can add `--no-cache` that will add some random noise if you get cache hits.
+
+### Terminal progress and ETA
+
+The CLI displays a plain-text progress bar by default, including the number
+of completed measured runs, elapsed time, and estimated time remaining. No
+`--progress` flag is necessary:
+
+```text
+[--------------------]   0% | 0/84 | Elapsed 00:00 | ETA --:--
+Running test: pp=2048, tg=128, depth=0, concurrency=1
+  Warmup (batch size 1)...
+  Run 1/3 (batch size 1)...
+[--------------------]   1% | 1/84 | Elapsed 00:35 | ETA 48:25
+```
+
+The ETA is `--:--` until **the first measured Run completes**, after its
+warmup(s). It then uses **total elapsed time divided by completed measured
+runs**, multiplied by remaining measured runs, so warmup and post-run overhead
+are included in the estimate. It updates only after a measured Run finishes,
+not for each output token. Prefix-caching context-load and inference phases
+count together as one Run. Different depths or concurrency levels may take
+very different amounts of time, so treat the ETA as approximate.
+
+This terminal display is separate from the opt-in `--emit-progress` JSONL
+stream; when `--emit-progress -` is used, status text is routed to stderr
+and stdout remains JSONL.
 
 ### Arguments
 
