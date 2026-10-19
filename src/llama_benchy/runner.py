@@ -11,6 +11,7 @@ from .config import BenchmarkConfig
 from .client import CONTEXT_LOAD_USER_MESSAGE, LLMClient
 from .prompts import PromptGenerator
 from .results import BenchmarkResults, BenchmarkMetadata
+from .terminal_progress import TerminalRunProgress
 
 class BenchmarkFailure(Exception):
     pass
@@ -92,6 +93,18 @@ class BenchmarkRunner:
                         )
                     except Exception:
                         pass
+
+                # Run-based terminal progress is always enabled. It is independent
+                # from the optional JSONL progress emitter.
+                total_measured_runs = (
+                    len(self.config.depths)
+                    * len(self.config.pp_counts)
+                    * len(self.config.tg_counts)
+                    * len(self.config.concurrency_levels)
+                    * max(0, self.config.num_runs)
+                )
+                terminal_progress = TerminalRunProgress(total_measured_runs)
+                print(terminal_progress.start())
 
                 # Main Loop
                 for depth in self.config.depths:
@@ -228,6 +241,13 @@ class BenchmarkRunner:
                                             subprocess.run(self.config.post_run_cmd, shell=True, check=True)
                                         except subprocess.CalledProcessError as e:
                                             print(f"Post-run command failed: {e}")
+
+                                # Warmups and per-shape overhead contribute to elapsed
+                                # time, but only completed measured runs advance progress.
+                                # One run with prefix caching has two phases; count it once.
+                                # Update after post-run hooks, not after individual tokens.
+                                    if not is_warmup:
+                                        print(terminal_progress.complete_run())
 
                                 # Aggregate and Record
                                 if self.config.enable_prefix_caching and depth > 0:
