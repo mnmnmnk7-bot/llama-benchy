@@ -142,7 +142,14 @@ class BenchmarkResults:
     @staticmethod
     def _request_succeeded(result: Optional[RequestResult]) -> bool:
         """A benchmarking request must complete without an error and generate tokens."""
-        return result is not None and not result.error and result.total_tokens > 0
+        return (
+            result is not None
+            and not result.error
+            and result.total_tokens > 0
+            and result.first_token_ts is not None
+            and bool(result.token_timestamps)
+            and result.end_ts > result.start_ts
+        )
 
     @classmethod
     def _batch_succeeded(cls, batch: List[RequestResult]) -> bool:
@@ -295,17 +302,20 @@ class BenchmarkResults:
         for res in valid_results:
             start_times.append(res.start_ts)
             end_times.append(res.end_ts)
-            all_token_timestamps.extend(res.token_timestamps)
+            # A single observed token has no decode interval; do not turn it
+            # into a misleading 1 token/s peak throughput data point.
+            if len(res.token_timestamps) > 1:
+                all_token_timestamps.extend(res.token_timestamps)
             
             if save_all_throughput_timeseries:
-                if res.token_timestamps:
+                if len(res.token_timestamps) > 1:
                     # Calculate per-request throughput series
                     peak, series = self._calculate_peak_throughput(res.token_timestamps, return_series=True)
                     batch_req_series.append(series)
                     agg_peak_req_throughputs.append(peak)
                 else:
                     batch_req_series.append([])
-            elif res.token_timestamps:
+            elif len(res.token_timestamps) > 1:
                  peak = self._calculate_peak_throughput(res.token_timestamps, return_series=False)
                  agg_peak_req_throughputs.append(peak)
 
