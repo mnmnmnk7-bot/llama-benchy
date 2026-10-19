@@ -8,7 +8,7 @@ import aiohttp
 
 from ._version import __version__
 from .config import BenchmarkConfig
-from .client import CONTEXT_LOAD_USER_MESSAGE, LLMClient
+from .client import CONTEXT_LOAD_USER_MESSAGE, LLMClient, RequestResult
 from .prompts import PromptGenerator
 from .results import BenchmarkResults, BenchmarkMetadata
 from .terminal_progress import TerminalRunProgress
@@ -51,6 +51,10 @@ class BenchmarkRunner:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _batch_succeeded(batch: List[RequestResult]) -> bool:
+        return BenchmarkResults._batch_succeeded(batch)
 
     async def run_suite(self):
         # Initialize session
@@ -176,33 +180,46 @@ class BenchmarkRunner:
                                             print(f"\n[Error] Stopping due to error in context load: {first_error}")
                                             raise BenchmarkFailure()
 
-                                        # Phase 2: Inference
-                                        print(f"  {run_label} (Inference, batch size {concurrency})...")
-                                        inf_tasks = []
-                                        for i in range(concurrency):
-                                            context, prompt = prompt_batch[i]
+                                        # Only a completed context-load phase can
+                                        # produce a valid prefix-cache inference sample.
+                                        if self._batch_succeeded(load_results):
+                                            # Phase 2: Inference
+                                            print(f"  {run_label} (Inference, batch size {concurrency})...")
+                                            inf_tasks = []
+                                            for i in range(concurrency):
+                                                context, prompt = prompt_batch[i]
+                                                if not is_warmup:
+                                                    rid = self._new_request_id()
+                                                    self._emit_request_start(rid, pp, tg, depth, concurrency, measured_run_index)
+                                                inf_tasks.append(self.client.run_generation(
+                                                    session,
+                                                    context_text=context,
+                                                    prompt_text=prompt,
+                                                    max_tokens=tg,
+                                                    no_cache=self.config.no_cache,
+                                                    tokenizer=tokenizer,
+                                                    progress=None if is_warmup else self.progress,
+                                                    request_id=None if is_warmup else rid,
+                                                ))
+
+                                            batch_results = await asyncio.gather(*inf_tasks)
                                             if not is_warmup:
-                                                rid = self._new_request_id()
-                                                self._emit_request_start(rid, pp, tg, depth, concurrency, measured_run_index)
-                                            inf_tasks.append(self.client.run_generation(
-                                                session,
-                                                context_text=context,
-                                                prompt_text=prompt,
-                                                max_tokens=tg,
-                                                no_cache=self.config.no_cache,
-                                                tokenizer=tokenizer,
-                                                progress=None if is_warmup else self.progress,
-                                                request_id=None if is_warmup else rid,
-                                            ))
+                                                run_std_results.append(batch_results)
 
-                                        batch_results = await asyncio.gather(*inf_tasks)
-                                        if not is_warmup:
-                                            run_std_results.append(batch_results)
+                                            if self.config.exit_on_first_fail and any(r.error for r in batch_results):
+                                                first_error = next(r.error for r in batch_results if r.error)
+                                                print(f"\n[Error] Stopping due to error in inference: {first_error}")
+                                                raise BenchmarkFailure()
 
-                                        if self.config.exit_on_first_fail and any(r.error for r in batch_results):
-                                            first_error = next(r.error for r in batch_results if r.error)
-                                            print(f"\n[Error] Stopping due to error in inference: {first_error}")
-                                            raise BenchmarkFailure()
+
+                                        else:
+                                            print(f"  {run_label} (Inference skipped: context load failed)")
+                                            batch_results = [
+                                                RequestResult(error="Context load failed; inference skipped")
+                                                for _ in range(concurrency)
+                                            ]
+                                            if not is_warmup:
+                                                run_std_results.append(batch_results)
 
                                     else:
                                         # Standard Run
@@ -247,7 +264,10 @@ class BenchmarkRunner:
                                     # One run with prefix caching has two phases; count it once.
                                     # Update after post-run hooks, not after individual tokens.
                                     if not is_warmup:
-                                        print(terminal_progress.complete_run())
+                                        run_succeeded = self._batch_succeeded(batch_results)
+                                        if self.config.enable_prefix_caching and depth > 0:
+                                            run_succeeded = run_succeeded and self._batch_succeeded(load_results)
+                                        print(terminal_progress.complete_run(success=run_succeeded))
 
                                 # Aggregate and Record
                                 if self.config.enable_prefix_caching and depth > 0:
@@ -257,6 +277,11 @@ class BenchmarkRunner:
                                     # Standard run expected tokens = pp + depth (usually depth=0 or concatenated)
                                     # In the loop above: expected_tokens = current_pp + current_depth
                                     self.results.add(self.config.model, pp, tg, depth, concurrency, run_std_results, latency, expected_pp + expected_ctx, is_context_phase=False, save_total_throughput_timeseries=self.config.save_total_throughput_timeseries, save_all_throughput_timeseries=self.config.save_all_throughput_timeseries)
+
+                failed_groups = [r for r in self.results.runs if r.failed_runs]
+                if failed_groups:
+                    failed_batches = sum(r.failed_runs for r in failed_groups if not r.is_context_prefill_phase)
+                    print(f"\n[Warning] {failed_batches} measured run(s) failed. CSV/JSON status fields identify invalid results.")
 
                 self.results.metadata = BenchmarkMetadata(
                     version=__version__,
