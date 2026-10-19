@@ -175,8 +175,8 @@ class BenchmarkRunner:
                                         if not is_warmup:
                                             run_ctx_results.append(load_results)
 
-                                        if self.config.exit_on_first_fail and any(r.error for r in load_results):
-                                            first_error = next(r.error for r in load_results if r.error)
+                                        if self.config.exit_on_first_fail and not self._batch_succeeded(load_results):
+                                            first_error = next((r.error for r in load_results if r and r.error), "Missing usable streamed token data")
                                             print(f"\n[Error] Stopping due to error in context load: {first_error}")
                                             raise BenchmarkFailure()
 
@@ -206,8 +206,8 @@ class BenchmarkRunner:
                                             if not is_warmup:
                                                 run_std_results.append(batch_results)
 
-                                            if self.config.exit_on_first_fail and any(r.error for r in batch_results):
-                                                first_error = next(r.error for r in batch_results if r.error)
+                                            if self.config.exit_on_first_fail and not self._batch_succeeded(batch_results):
+                                                first_error = next((r.error for r in batch_results if r and r.error), "Missing usable streamed token data")
                                                 print(f"\n[Error] Stopping due to error in inference: {first_error}")
                                                 raise BenchmarkFailure()
 
@@ -246,8 +246,8 @@ class BenchmarkRunner:
                                         if not is_warmup:
                                             run_std_results.append(batch_results)
 
-                                        if self.config.exit_on_first_fail and any(r.error for r in batch_results):
-                                            first_error = next(r.error for r in batch_results if r.error)
+                                        if self.config.exit_on_first_fail and not self._batch_succeeded(batch_results):
+                                            first_error = next((r.error for r in batch_results if r and r.error), "Missing usable streamed token data")
                                             print(f"\n[Error] Stopping due to error in standard run: {first_error}")
                                             raise BenchmarkFailure()
 
