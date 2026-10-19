@@ -242,10 +242,10 @@ class BenchmarkRunner:
                                         except subprocess.CalledProcessError as e:
                                             print(f"Post-run command failed: {e}")
 
-                                # Warmups and per-shape overhead contribute to elapsed
-                                # time, but only completed measured runs advance progress.
-                                # One run with prefix caching has two phases; count it once.
-                                # Update after post-run hooks, not after individual tokens.
+                                    # Warmups and per-shape overhead contribute to elapsed
+                                    # time, but only completed measured runs advance progress.
+                                    # One run with prefix caching has two phases; count it once.
+                                    # Update after post-run hooks, not after individual tokens.
                                     if not is_warmup:
                                         print(terminal_progress.complete_run())
 
