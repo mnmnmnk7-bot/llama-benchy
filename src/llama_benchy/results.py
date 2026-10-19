@@ -498,7 +498,7 @@ class BenchmarkResults:
             fmt(row["peak_ts_req"]),
             fmt(row["ttfr"]), 
             fmt(row["est_ppt"]), 
-            fmt(row["e2e_ttft"])
+            fmt(row["e2e_ttft"]),
             row["status"],
             f'{row["successful_runs"]}/{row["total_runs"]}',
         ] for row in rows]
