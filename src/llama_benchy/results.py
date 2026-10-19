@@ -197,7 +197,11 @@ class BenchmarkResults:
             for result in batch:
                 reason = (
                     "Missing request result" if result is None
-                    else result.error or "Request completed without generated tokens"
+                    else result.error or (
+                        "Request completed without generated tokens"
+                        if result.total_tokens <= 0
+                        else "Request completed without usable token timing"
+                    )
                 )
                 if reason and reason not in errors:
                     errors.append(reason)
