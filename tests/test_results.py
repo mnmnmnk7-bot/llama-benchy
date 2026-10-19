@@ -149,3 +149,21 @@ def test_no_output_response_is_treated_as_invalid_batch():
     assert run.status == "failed"
     assert "without generated tokens" in run.error
     assert run.tg_throughput is None
+
+
+def test_single_generated_token_does_not_become_peak_decode_throughput():
+    results = BenchmarkResults()
+    results.add(
+        "model", 100, 1, 0, 1,
+        [[RequestResult(
+            start_ts=0.1, first_response_ts=0.9, first_token_ts=1.0,
+            end_ts=1.1, prompt_tokens=100, total_tokens=1,
+            token_timestamps=[1.0],
+        )]],
+        latency=0.0, expected_pp_tokens=100,
+    )
+    run = results.runs[0]
+    assert run.status == "ok"
+    assert run.tg_throughput is None
+    assert run.peak_throughput is None
+    assert not any(row["test_name"].startswith("tg1") for row in results._generate_rows())
