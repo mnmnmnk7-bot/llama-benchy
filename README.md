@@ -168,13 +168,15 @@ Running test: pp=2048, tg=128, depth=0, concurrency=1
 [--------------------]   1% | 1/84 | Elapsed 00:35 | ETA 48:25
 ```
 
-The ETA is `--:--` until **the first measured Run completes**, after its
-warmup(s). It then uses **total elapsed time divided by completed measured
-runs**, multiplied by remaining measured runs, so warmup and post-run overhead
-are included in the estimate. It updates only after a measured Run finishes,
-not for each output token. Prefix-caching context-load and inference phases
-count together as one Run. Different depths or concurrency levels may take
-very different amounts of time, so treat the ETA as approximate.
+The ETA is `--:--` until **the first successful measured Run completes**,
+after its warmup(s). It uses the mean observed duration of successful measured
+Runs, multiplied by the remaining attempted Runs; per-shape warmups and post-run
+overhead are included in these samples. Failed Runs still advance the progress
+counter, but their durations are excluded from the ETA average. Once failures
+occur, the display also includes `OK N FAIL M`. It updates only after a
+measured Run finishes, not for each output token. Prefix-caching context-load
+and inference phases count together as one Run. Different depths or concurrency
+levels may take very different amounts of time, so treat the ETA as approximate.
 
 This terminal display is separate from the opt-in `--emit-progress` JSONL
 stream; when `--emit-progress -` is used, status text is routed to stderr
@@ -372,6 +374,14 @@ date: 2026-02-06 16:36:05 | latency mode: generation
 
 To perform additional analysis or generate any visualizations, you can output results in JSON or CSV. 
 JSON (`--format json`) will give you the most detailed data. If you specify `--save-total-throughput-timeseries`, then JSON will include total throughput in 1 second intervals.
+
+CSV and JSON results include `status` (`ok`, `partial`, or `failed`),
+`successful_runs`, `failed_runs`, `total_runs`, and a sample `error` message.
+A measured batch is successful only if **all concurrent requests** return
+usable token timing. Partial-concurrency batches are excluded from throughput
+averages. Fully failed test shapes are still present in CSV with blank
+throughput metrics and `status=failed`, rather than being silently dropped.
+The extra CSV fields are appended after the original throughput columns.
 
 - [Sample JSON file](schemas/sample.json)
 - [Sample JSON file with embedded documentation](schemas/sample.jsonc)
