@@ -31,6 +31,11 @@ class BenchmarkRun(BaseModel):
     prompt_size: int = Field(..., description="Prompt size (tokens)")
     response_size: int = Field(..., description="Response size (tokens)")
     is_context_prefill_phase: bool = Field(..., description="Whether this was a context prefill phase run")
+    total_runs: int = Field(0, description="Number of measured batches attempted")
+    successful_runs: int = Field(0, description="Batches with every request successful")
+    failed_runs: int = Field(0, description="Batches with at least one failed request")
+    status: str = Field("ok", description="ok, partial, or failed")
+    error: Optional[str] = Field(None, description="Sample failure reason; absent on success")
     
     # Metrics (using BenchmarkMetric)
     pp_throughput: Optional[BenchmarkMetric] = Field(None, description="Prefill tokens per second (total)")
@@ -134,6 +139,22 @@ class BenchmarkResults:
             return final_peak, series
         return final_peak
 
+    @staticmethod
+    def _request_succeeded(result: Optional[RequestResult]) -> bool:
+        """A benchmarking request must complete without an error and generate tokens."""
+        return (
+            result is not None
+            and not result.error
+            and result.total_tokens > 0
+            and result.first_token_ts is not None
+            and bool(result.token_timestamps)
+            and result.end_ts > result.start_ts
+        )
+
+    @classmethod
+    def _batch_succeeded(cls, batch: List[RequestResult]) -> bool:
+        return bool(batch) and all(cls._request_succeeded(result) for result in batch)
+
     def add(self, 
             model: str, 
             pp: int, 
@@ -166,7 +187,28 @@ class BenchmarkResults:
         agg_throughput_series: List[TimeSeries] = []
         agg_req_throughput_series: List[List[TimeSeries]] = []
 
+        successful_batches = [batch for batch in run_results if self._batch_succeeded(batch)]
+        failed_runs = len(run_results) - len(successful_batches)
+        status = "ok" if not failed_runs else ("partial" if successful_batches else "failed")
+        errors: List[str] = []
         for batch in run_results:
+            if self._batch_succeeded(batch):
+                continue
+            for result in batch:
+                reason = (
+                    "Missing request result" if result is None
+                    else result.error or (
+                        "Request completed without generated tokens"
+                        if result.total_tokens <= 0
+                        else "Request completed without usable token timing"
+                    )
+                )
+                if reason and reason not in errors:
+                    errors.append(reason)
+        error_summary = " | ".join(error[:240] for error in errors[:3]) or None
+
+        # Never mix partial-concurrency batches into full-concurrency metrics.
+        for batch in successful_batches:
             self._process_batch(
                 batch, 
                 expected_pp_tokens, 
@@ -207,6 +249,11 @@ class BenchmarkResults:
             prompt_size=pp, # Configured prompt size
             response_size=tg,
             is_context_prefill_phase=is_context_phase,
+            total_runs=len(run_results),
+            successful_runs=len(successful_batches),
+            failed_runs=failed_runs,
+            status=status,
+            error=error_summary,
             pp_throughput=run_metric_pp_throughput,
             pp_req_throughput=run_metric_pp_req_throughput,
             tg_throughput=run_metric_tg_throughput,
@@ -259,17 +306,20 @@ class BenchmarkResults:
         for res in valid_results:
             start_times.append(res.start_ts)
             end_times.append(res.end_ts)
-            all_token_timestamps.extend(res.token_timestamps)
+            # A single observed token has no decode interval; do not turn it
+            # into a misleading 1 token/s peak throughput data point.
+            if len(res.token_timestamps) > 1:
+                all_token_timestamps.extend(res.token_timestamps)
             
             if save_all_throughput_timeseries:
-                if res.token_timestamps:
+                if len(res.token_timestamps) > 1:
                     # Calculate per-request throughput series
                     peak, series = self._calculate_peak_throughput(res.token_timestamps, return_series=True)
                     batch_req_series.append(series)
                     agg_peak_req_throughputs.append(peak)
                 else:
                     batch_req_series.append([])
-            elif res.token_timestamps:
+            elif len(res.token_timestamps) > 1:
                  peak = self._calculate_peak_throughput(res.token_timestamps, return_series=False)
                  agg_peak_req_throughputs.append(peak)
 
@@ -370,11 +420,20 @@ class BenchmarkResults:
             if self.metadata and self.metadata.max_concurrency > 1:
                 c_suffix = f" (c{run.concurrency})"
 
+            info = {
+                "status": run.status,
+                "successful_runs": run.successful_runs,
+                "failed_runs": run.failed_runs,
+                "total_runs": run.total_runs,
+                "error": run.error,
+            }
+
             if run.is_context_prefill_phase:
                 # Context Phase Prompt Processing
-                if run.pp_throughput:
+                if run.pp_throughput or run.status != "ok":
                     rows.append({
                         "model": self.model_name or "Unknown",
+                        **info,
                         "test_name": f"ctx_pp @ d{run.context_size}{c_suffix}",
                         "t_s": run.pp_throughput,
                         "t_s_req": run.pp_req_throughput,
@@ -386,9 +445,10 @@ class BenchmarkResults:
                     })
                 
                 # Context Phase Token Generation
-                if run.tg_throughput or run.peak_throughput:
+                if run.tg_throughput or run.peak_throughput or run.status != "ok":
                     rows.append({
                         "model": self.model_name or "Unknown",
+                        **info,
                         "test_name": f"ctx_tg @ d{run.context_size}{c_suffix}",
                         "t_s": run.tg_throughput,
                         "t_s_req": run.tg_req_throughput,
@@ -403,9 +463,10 @@ class BenchmarkResults:
                 d_suffix = f" @ d{run.context_size}" if run.context_size > 0 else ""
                 
                 # Prompt Processing
-                if run.pp_throughput:
+                if run.pp_throughput or run.status != "ok":
                     rows.append({
                         "model": self.model_name or "Unknown",
+                        **info,
                         "test_name": f"pp{run.prompt_size}{d_suffix}{c_suffix}",
                         "t_s": run.pp_throughput,
                         "t_s_req": run.pp_req_throughput,
@@ -417,9 +478,10 @@ class BenchmarkResults:
                     })
                 
                 # Token Generation
-                if run.tg_throughput or run.peak_throughput:
+                if run.tg_throughput or run.peak_throughput or run.status != "ok":
                     rows.append({
                         "model": self.model_name or "Unknown",
+                        **info,
                         "test_name": f"tg{run.response_size}{d_suffix}{c_suffix}",
                         "t_s": run.tg_throughput,
                         "t_s_req": run.tg_req_throughput,
@@ -450,11 +512,13 @@ class BenchmarkResults:
             fmt(row["peak_ts_req"]),
             fmt(row["ttfr"]), 
             fmt(row["est_ppt"]), 
-            fmt(row["e2e_ttft"])
+            fmt(row["e2e_ttft"]),
+            row["status"],
+            f'{row["successful_runs"]}/{row["total_runs"]}',
         ] for row in rows]
 
         ts_header = "t/s (total)" if concurrency > 1 else "t/s"
-        headers = ["model", "test", ts_header, "t/s (req)", "peak t/s", "peak t/s (req)", "ttfr (ms)", "est_ppt (ms)", "e2e_ttft (ms)"]
+        headers = ["model", "test", ts_header, "t/s (req)", "peak t/s", "peak t/s (req)", "ttfr (ms)", "est_ppt (ms)", "e2e_ttft (ms)", "status", "valid/total"]
         
         if concurrency == 1:
             data = [[
@@ -464,11 +528,13 @@ class BenchmarkResults:
                 fmt(row["peak_ts"]),
                 fmt(row["ttfr"]), 
                 fmt(row["est_ppt"]), 
-                fmt(row["e2e_ttft"])
+                fmt(row["e2e_ttft"]),
+                row["status"],
+                f'{row["successful_runs"]}/{row["total_runs"]}',
             ] for row in rows]
-            headers = ["model", "test", ts_header, "peak t/s", "ttfr (ms)", "est_ppt (ms)", "e2e_ttft (ms)"]
+            headers = ["model", "test", ts_header, "peak t/s", "ttfr (ms)", "est_ppt (ms)", "e2e_ttft (ms)", "status", "valid/total"]
 
-        return tabulate(data, headers=headers, tablefmt="pipe", colalign=("left", "right", "right", "right", "right", "right", "right", "right", "right") if concurrency > 1 else ("left", "right", "right", "right", "right", "right", "right"))
+        return tabulate(data, headers=headers, tablefmt="pipe")
 
     def save_report(self, filename: Optional[str], format: str, concurrency: int = 1):
         msg = ""
@@ -507,7 +573,7 @@ class BenchmarkResults:
         elif format == "csv":
              rows = self._generate_rows()
              csv_rows = []
-             headers = ["model", "test_name", "t_s_mean", "t_s_std", "t_s_req_mean", "t_s_req_std", "peak_ts_mean", "peak_ts_std", "peak_ts_req_mean", "peak_ts_req_std", "ttfr_mean", "ttfr_std", "est_ppt_mean", "est_ppt_std", "e2e_ttft_mean", "e2e_ttft_std"]
+             headers = ["model", "test_name", "t_s_mean", "t_s_std", "t_s_req_mean", "t_s_req_std", "peak_ts_mean", "peak_ts_std", "peak_ts_req_mean", "peak_ts_req_std", "ttfr_mean", "ttfr_std", "est_ppt_mean", "est_ppt_std", "e2e_ttft_mean", "e2e_ttft_std", "status", "successful_runs", "failed_runs", "total_runs", "error"]
              
              for r in rows:
                  row = {
@@ -527,6 +593,11 @@ class BenchmarkResults:
                      "est_ppt_std": r["est_ppt"].std if r["est_ppt"] else None,
                      "e2e_ttft_mean": r["e2e_ttft"].mean if r["e2e_ttft"] else None,
                      "e2e_ttft_std": r["e2e_ttft"].std if r["e2e_ttft"] else None,
+                     "status": r["status"],
+                     "successful_runs": r["successful_runs"],
+                     "failed_runs": r["failed_runs"],
+                     "total_runs": r["total_runs"],
+                     "error": r["error"],
                  }
                  csv_rows.append(row)
              
