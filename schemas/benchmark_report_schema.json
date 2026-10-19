@@ -56,6 +56,43 @@
           "title": "Is Context Prefill Phase",
           "type": "boolean"
         },
+        "total_runs": {
+          "default": 0,
+          "description": "Number of measured batches attempted",
+          "title": "Total Runs",
+          "type": "integer"
+        },
+        "successful_runs": {
+          "default": 0,
+          "description": "Batches with every request successful",
+          "title": "Successful Runs",
+          "type": "integer"
+        },
+        "failed_runs": {
+          "default": 0,
+          "description": "Batches with at least one failed request",
+          "title": "Failed Runs",
+          "type": "integer"
+        },
+        "status": {
+          "default": "ok",
+          "description": "ok, partial, or failed",
+          "title": "Status",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Sample failure reason; absent on success",
+          "title": "Error"
+        },
         "pp_throughput": {
           "anyOf": [
             {
